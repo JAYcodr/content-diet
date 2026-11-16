@@ -12,8 +12,7 @@
     nintendo_hk.py --commit         # 把本次 --new 的条目记入 seen（发完卡片再调）
     nintendo_hk.py --publishers     # 看发行商排行，便于维护名单
 
-状态：/opt/data/cache/nintendo/seen.json
-海报：/opt/data/cache/nintendo/posters/<id>.jpg
+状态与海报都在 $CONTENT_DIET_HOME/nintendo/ 下
 """
 
 from __future__ import annotations
@@ -121,7 +120,7 @@ def parse(html: str) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------- 口味信号
-# 依据 /opt/data/docs/taste_profile.md（Hamelin 本人提供的口味白皮书摘要）。
+# 口味分层的依据是 profile.json（由 setup/init.py 生成）。
 # 只做"排序 + 明显排除"，不做题材审查：恐怖、无双、射击这类只标 caution，不丢。
 TASTE_HIT_SERIES = [
     "薩爾達", "塞尔达", "異度神劍", "异度神剑", "皮克敏", "卡比", "動森", "动物森友",

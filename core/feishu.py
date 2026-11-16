@@ -8,7 +8,7 @@
   python3 feishu_card.py read  --chat oc_xxx --limit 5   # 回读最近消息
   python3 feishu_card.py read  --message om_xxx
 
-凭据取自 /opt/data/.env 的 FEISHU_APP_ID / FEISHU_APP_SECRET。代理走环境变量。
+凭据取自 $CONTENT_DIET_HOME/.env（FEISHU_APP_ID / FEISHU_APP_SECRET）。
 构建函数：card_v2 / md / table / img / cols / btn / divider / footer。
 """
 from __future__ import annotations

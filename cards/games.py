@@ -5,7 +5,7 @@
 
     {"games": [{"title": "...", "publisher": "...", "date": "2026.11.20",
                 "label": "下載版", "url": "https://ec.nintendo.com/...",
-                "poster_file": "/opt/data/cache/nintendo/posters/xxx.jpg",
+                "poster_file": "<state>/nintendo/posters/xxx.jpg",
                 "blurb": "一句话说明（可省）"}],
      "skipped": 45,
      "window_days": 45}

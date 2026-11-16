@@ -161,7 +161,7 @@ def cron_plan(answers: dict) -> list:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--answers", help="访谈结果 JSON")
-    parser.add_argument("--name", default="Hamelin", help="档案里的称呼")
+    parser.add_argument("--name", default="你", help="档案里的称呼")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--example", action="store_true", help="打印答案模板")
     args = parser.parse_args()

@@ -9,7 +9,7 @@
     qidian_pick.py --cats 9,10 --limit 8
     qidian_pick.py --json             # 机器可读
 
-口味依据 /opt/data/docs/taste_profile.md：远瞳式种田/文明推演/冷幽默、系统自洽、
+口味依据 profile.json：种田/文明推演/冷幽默、系统自洽、
 后宫+政治博弈可以，龙傲天降智爽文不行。
 """
 
@@ -41,10 +41,8 @@ CATS = {
 AUTHORS = {
     "远瞳": 5, "爱潜水的乌贼": 3, "榴弹怕水": 2, "黑山老鬼": 1, "轻泉流响": 1,
 }
-# 弃书 / 已读名单：口味档案里点名的作品，不重复推荐
-DROPPED = {"玄鉴仙族", "苟在初圣魔门当人材", "黎明之剑", "这游戏也太真实了", "炮火弧线",
-           "天才俱乐部", "我家老婆来自一千年前", "那就让她们献上忠诚吧", "黎明之劫",
-           "一睡万年", "星际农场主小时候"}
+# 弃书 / 已读名单来自 profile.json（novels_seen），不重复推荐
+DROPPED = {str(x) for x in config.profile_list("novels_seen")}
 
 # 书架种子：已在追的书不重复推荐，同时用来算分类偏好
 SHELF_PATH = str(config.state_dir("qidian") / "bookshelf_seed.json")
