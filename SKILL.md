@@ -39,6 +39,11 @@ python3 setup/doctor.py --fix
 看三件事：源是否可达、`FEISHU_*` 是否已配、有没有装 Pillow（任天堂海报拼图用）。
 某些网络下 Bangumi 必须走代理：`export CONTENT_DIET_PROXY=http://host:port`。
 
+**沙箱权限（DSH 默认 `workspace-write`，$HOME 不可写）**：第一步就设可写状态目录，
+`export CONTENT_DIET_HOME=$PWD/.content-diet`。不设的话 `--fix` 会给你一句可照做的提示（不是 traceback）；
+`--preview` / `--no-send` 在只读环境下仍能出卡（缓存降级），但写 `.env` / `profile.json` 必须先设。
+完整说明见 README「在 DeepSeek Harness（DSH）里运行」。
+
 ### 第 2 步：访谈（**先把这一步做对，后面全是自动的**）
 
 读 `setup/interview.md`，按用户选的深度提问。四档：
@@ -96,7 +101,13 @@ python3 -m cards.music --days 60 --no-send
 python3 -m cards.weekly
 ```
 
-跑通后再建定时任务（cron 语法各家不同，按宿主 agent 的能力建）：
+跑通后再建定时任务（按宿主 agent 的能力建）：
+
+- **裸机**：cron / systemd timer
+- **DSH**：用自带 `schedule`（rrule），**不要 crontab**——沙箱里 exit 126；prompt 里写清
+  `cd <repo> && CONTENT_DIET_HOME=<repo>/.content-diet python3 -m cards.weekly`
+- **DSH 技能发现**：裸 `git clone` 不会出现在技能列表里，要么把 SKILL.md 路径贴给 agent，
+  要么发布成 DSH bundle。
 
 | 卡 | 频率 | 命令 |
 |---|---|---|

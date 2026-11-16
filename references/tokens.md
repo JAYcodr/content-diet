@@ -7,6 +7,29 @@
 
 ## 1. 飞书（必需，否则发不出卡片）
 
+### 已经有机器人？直接复用，别建第二个
+
+如果你的 DSH 里已经装好飞书通道插件 `@xmanrui/dsh-im`，**不用再建应用**：
+
+- appId / secret 用同一只机器人的（它已经把建应用、扫码授权、权限、长连接、chat_id 全做完了）
+- 发送消息**不需要长连接**，不会和 dsh-im 抢事件
+- `chat_id` 可以在 dsh-im 的设置页「投递目标 → 从已聊会话选择」里直接选，不需要 `feishu_chats.py`
+  （那个脚本要求 `im:chat:readonly`，dsh-im 的应用未必开了这个权限）
+
+自动取凭据：
+
+```bash
+python3 setup/feishu_from_dsh_im.py --dry-run   # 先看能读到什么
+python3 setup/feishu_from_dsh_im.py             # 读到就写进 .env
+```
+
+它读 `~/.dsh/integrations/dsh-feishu/config.json` 的 appId 和 `~/.dsh/.credentials.yaml` 里的 secret；
+读不到会打印手动配置的两行，不会报错。**卡片发不出去时的兜底**：dsh-im 还有独立的文字投递接口
+（`POST http://127.0.0.1:<port>/api/dsh-im/delivery/messages`，只支持 plain/markdown，不支持 interactive 卡片），
+可以当降级路径，但别写成默认——卡片是这个包的卖点。
+
+### 没有机器人？自己建一个
+
 要做三样：建应用、开权限、拿 chat_id。
 
 ### 1.1 建应用拿 App ID / Secret

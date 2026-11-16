@@ -111,8 +111,11 @@ def main() -> int:
                               "set": bool(config.get(key)), "loss": loss})
 
     matrix = capability_matrix()
+    home_writable = config.can_write(config.home())
     payload = {
         "home": str(config.home()),
+        "home_writable": home_writable,
+        "home_hint": "" if home_writable else config.hint(config.home(), "目录不可写"),
         "env_file": str(config.env_path()),
         "env_file_exists": config.env_path().exists(),
         "python": sys.version.split()[0],
@@ -126,7 +129,12 @@ def main() -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
-    print(f"状态目录：{config.home()}")
+    print(f"状态目录：{config.home()}"
+          + ("" if payload["home_writable"] else "  ⚠ 不可写（只读环境）"))
+    if not payload["home_writable"]:
+        print("  → " + config.hint(config.home(), "不可写").splitlines()[1])
+    if str(config.home()).startswith(str(Path.cwd())):
+        print("  提示：状态目录在当前 git 仓库内，已写入的 profile/.env 请确认被 .gitignore 覆盖")
     print(f"凭据文件：{config.env_path()}{'' if config.env_path().exists() else '（还不存在，运行 --fix 生成模板）'}")
     print(f"Python {payload['python']}｜Pillow：{'有' if payload['pillow'] else '无（任天堂海报拼图需要它）'}")
     print("\n【数据源】")

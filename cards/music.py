@@ -129,7 +129,8 @@ def albums(artist_id: int, days: int, today: dt.date) -> List[Dict[str, Any]]:
 def download_cover(url: str, album_id: int) -> Optional[Path]:
     if not url:
         return None
-    CACHE.mkdir(parents=True, exist_ok=True)
+    if not config.try_mkdir(CACHE):
+        return None
     target = CACHE / f"{album_id}.jpg"
     if target.exists() and target.stat().st_size > 2000:
         return target
@@ -163,7 +164,8 @@ def img_key_for(path: Optional[Path]) -> Optional[str]:
         print(f"封面上传失败: {exc}", file=sys.stderr)
         return None
     cache[digest] = key
-    KEY_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    if not config.try_mkdir(KEY_CACHE.parent):
+        return key
     KEY_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return key
 
@@ -187,8 +189,8 @@ def collect(days: int) -> List[Dict[str, Any]]:
                 found.append({**album, "artist": name})
         except Exception as exc:  # noqa: BLE001
             print(f"专辑查询失败 {name}: {exc}", file=sys.stderr)
-    ARTIST_CACHE.parent.mkdir(parents=True, exist_ok=True)
-    ARTIST_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if config.try_mkdir(ARTIST_CACHE.parent):
+        ARTIST_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     # 同名专辑会被不同艺人重复收录，按 (名字, 日期) 去重
     seen, unique = set(), []
     for album in sorted(found, key=lambda a: a["date"], reverse=True):

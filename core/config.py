@@ -18,12 +18,54 @@ DEFAULT_HOME = "~/.content-diet"
 PROXY = os.environ.get("CONTENT_DIET_PROXY") or os.environ.get("HTTPS_PROXY") or ""
 
 
-def home() -> Path:
-    """状态根目录：CONTENT_DIET_HOME → ~/.content-diet。"""
+def hint(path: Path, exc: Exception) -> str:
+    """写入失败的可照做提示（沙箱里 $HOME 常不可写，这是预期环境问题）。"""
+    return (
+        f"无法写入 {path}（{exc}）\n"
+        "当前权限模式不允许写工作区外。改运行：\n"
+        "  export CONTENT_DIET_HOME=$PWD/.content-diet\n"
+        "或在会话里切到「完全权限」。"
+    )
+
+
+def home(create: bool = False) -> Path:
+    """状态根目录：CONTENT_DIET_HOME → ~/.content-diet。
+
+    默认**不建目录**——只读路径不能因为"读一下配置"就崩。真要写时用
+    :func:`ensure_writable`，它会把 PermissionError 翻译成上面那句提示。
+    """
     raw = os.environ.get("CONTENT_DIET_HOME", DEFAULT_HOME)
-    path = Path(raw).expanduser()
-    path.mkdir(parents=True, exist_ok=True)
+    return Path(raw).expanduser()
+
+
+def ensure_writable(path: Path) -> Path:
+    """目录能建 + 能写文件才放行；否则给一句可照做的提示（不是 traceback）。"""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write-probe"
+        probe.touch(exist_ok=True)
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        raise SystemExit(hint(path, exc))
     return path
+
+
+def try_mkdir(path: Path) -> bool:
+    """建目录，失败返回 False（只读环境下让调用方降级，而不是抛异常）。"""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def can_write(path: Path) -> bool:
+    """这个目录能不能写（doctor 用它做能力探测）。"""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return True
+    except OSError:
+        return False
 
 
 def env_path() -> Path:
@@ -67,8 +109,12 @@ def require(key: str, hint: str = "") -> str:
 
 
 def state_dir(name: str = "") -> Path:
+    """缓存/状态目录：尽量建，建不了也返回路径——只读环境下降级，不崩。"""
     path = home() / name if name else home()
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
     return path
 
 
@@ -99,6 +145,7 @@ def profile_list(key: str) -> list:
 def save_env(values: Dict[str, str]) -> Path:
     """把若干键写入 .env（已存在的键会被覆盖），返回路径。"""
     path = env_path()
+    ensure_writable(path.parent)      # 探测的是目录；.env 是文件，别当目录建
     existing: Dict[str, str] = {}
     order: list = []
     if path.exists():

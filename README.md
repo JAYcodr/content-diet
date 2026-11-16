@@ -85,3 +85,58 @@ references/
 ## License
 
 MIT
+
+---
+
+## 在 DeepSeek Harness（DSH）里运行
+
+DSH 的沙箱、定时任务、技能发现都和裸机 shell 不一样。照下面五点做，不然会在三处踩空。
+
+### 1. 权限与状态目录（最常踩）
+
+DSH 默认 `workspace-write`：工作区外（含 `$HOME`）不可写，**不弹审批直接 `Operation not permitted`**。
+所以第一步先定一个可写目录：
+
+```bash
+export CONTENT_DIET_HOME="$PWD/.content-diet"
+```
+
+或者让用户在会话里切到「完全权限」。**不要把「默认 `~/.content-diet`」当成一定能写。**
+只读环境下 `--preview` / `--no-send` 仍能出卡（缓存写不进去就降级），但要写 `.env` / `profile.json` 就必须先设这个变量。
+
+### 2. 定时任务用 DSH 自带 `schedule`，不要 cron
+
+`crontab` 在沙箱里 exit 126，`~/Library/LaunchAgents` 也写不进去。用 DSH 的 `schedule_create`（rrule）：
+
+```
+DTSTART;TZID=Asia/Shanghai:20261122T200000
+RRULE:FREQ=WEEKLY;BYDAY=SU;BYHOUR=20;BYMINUTE=0
+```
+
+prompt 里写清 cwd 与状态目录：
+
+```bash
+cd <repo> && CONTENT_DIET_HOME=<repo>/.content-diet python3 -m cards.weekly
+```
+
+要点：`target=new_once`；DSH 进程要常驻，停机后只补最近一次；**没有新内容时让 agent 明确回「本周无更新」**，
+否则绑了 IM 的 session 里空输出也会触发一条投递通知（噪音）。
+
+### 3. 技能发现
+
+DSH 只从**已安装插件**的 `skills/<name>/SKILL.md` 发现技能，裸 `git clone` 不会自动出现在技能列表里。二选一：
+
+- README 明说「把仓库里的 `SKILL.md` 路径贴给 agent」；
+- 或发布成 DSH bundle（`package.json` 带 `dsh.bundle`，`skills/content-diet/SKILL.md` 指回脚本）。
+
+### 4. 推荐插件：`@xmanrui/dsh-im`（飞书通道）
+
+它已经处理了建应用、扫码授权、长连接、私聊/群 chat_id，**这个包可以复用同一只机器人**，
+不用让朋友再建第二个飞书应用（见 `references/tokens.md` 第 1 节与 `setup/feishu_from_dsh_im.py`）。
+零配置兜底：`POST http://127.0.0.1:<port>/api/dsh-im/delivery/messages` 只发文字摘要（不支持 interactive 卡片）。
+
+### 5. 一个容易误判的小坑
+
+macOS + DSH 沙箱里 `git clone` 会先打印
+`fatal: unable to get credential storage lock in 1000 ms: Operation not permitted`，
+**但 clone 实际成功**——别以为下载失败。

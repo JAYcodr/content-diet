@@ -58,7 +58,8 @@ def img_key(path: Path) -> str | None:
         print(f"海报上传失败 {path.name}: {exc}", file=sys.stderr)
         return None
     cache[digest] = key
-    KEY_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    if not config.try_mkdir(KEY_CACHE.parent):
+        return key
     KEY_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return key
 

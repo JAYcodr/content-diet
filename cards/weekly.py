@@ -42,7 +42,8 @@ def fetch_image(url: str, name: str, *, via_proxy: bool) -> Optional[Path]:
     """下载封面到缓存，返回本地路径。Bangumi 图站直连不通，必须走代理。"""
     if not url:
         return None
-    CACHE.mkdir(parents=True, exist_ok=True)
+    if not config.try_mkdir(CACHE):
+        return None          # 只读环境：没有封面缓存就降级成纯文字行
     target = CACHE / f"{name}.jpg"
     if target.exists() and target.stat().st_size > 1000:
         return target
@@ -82,7 +83,8 @@ def img_key_for(path: Optional[Path]) -> Optional[str]:
         print(f"封面上传失败 {path.name}: {exc}", file=sys.stderr)
         return None
     cache[digest] = key
-    KEY_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    if not config.try_mkdir(KEY_CACHE.parent):
+        return key
     KEY_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return key
 

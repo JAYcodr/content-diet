@@ -148,8 +148,15 @@ def cron_plan(answers: dict) -> list:
          "cmd": "python3 -m cards.weekly",
          "note": "番剧（Bangumi 当季）+ 网文（起点月票榜）"},
         {"name": "任天堂新作", "schedule": "每周四 20:00",
-         "cmd": "python3 -m cards.games --from-nintendo",
-         "note": "有新增才发；需要先跑 sources/nintendo_hk.py --new"},
+         "cmd": ("python3 sources/nintendo_hk.py --new > /tmp/nk.json"
+                 " && python3 setup/poster_sheet.py --data /tmp/nk.json"
+                 " && python3 -m cards.games --data /tmp/nk.json"
+                 " && python3 sources/nintendo_hk.py --commit --all --from-payload /tmp/nk.json"),
+         "steps": ["抓取 + 下载海报 + 标注 review",
+                   "海报拼图给 agent 判断「是不是 AI 垃圾」，必要时删条目",
+                   "发卡",
+                   "记基线（不记会重复推）"],
+         "note": "拆成四步更好：agent 要在第 2 步之后看一眼再发。没有新增时第 1 步输出 new_count=0，直接跳过发卡"},
     ]
     if answers.get("core_artists"):
         plan.append({"name": "音乐新发行", "schedule": "每月 1 日 10:00",
@@ -207,17 +214,24 @@ def main() -> int:
         print(md[:1200])
         return 0
 
-    targets["profile"].write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    targets["taste"].write_text(md, encoding="utf-8")
-    if not targets["env"].exists():
-        config.save_env({"FEISHU_APP_ID": "", "FEISHU_APP_SECRET": "", "FEISHU_CHAT_ID": ""})
+    try:
+        config.ensure_writable(targets["profile"].parent)
+        targets["profile"].write_text(json.dumps(profile, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        targets["taste"].write_text(md, encoding="utf-8")
+        if not targets["env"].exists():
+            config.save_env({"FEISHU_APP_ID": "", "FEISHU_APP_SECRET": "", "FEISHU_CHAT_ID": ""})
+    except OSError as exc:
+        raise SystemExit(config.hint(targets["profile"].parent, exc))
 
     print(f"✅ 口味档案已写入 {targets['profile']}")
     print(f"✅ 可读版 {targets['taste']}")
     print(f"✅ 凭据模板 {targets['env']}（还没填的话按 references/tokens.md 补）")
     print("\n建议排期（agent 照此建定时任务）：")
     for item in cron_plan(answers):
-        print(f"  · {item['name']}｜{item['schedule']}｜{item['cmd']}")
+        print(f"  · {item['name']}｜{item['schedule']}")
+        print(f"      {item['cmd']}")
+        for step in item.get("steps", []):
+            print(f"      - {step}")
     return 0
 
 

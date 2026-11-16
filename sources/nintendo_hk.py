@@ -181,7 +181,8 @@ def poster_path(item: Dict[str, Any]) -> Optional[Path]:
     url = item.get("poster_url") or ""
     if not url:
         return None
-    POSTERS.mkdir(parents=True, exist_ok=True)
+    if not config.try_mkdir(POSTERS):
+        return None
     target = POSTERS / f"{item['id']}.jpg"
     if target.exists() and target.stat().st_size > 1000:
         return target
@@ -241,7 +242,9 @@ def load_seen() -> Dict[str, Any]:
 
 
 def save_seen(seen: Dict[str, Any]) -> None:
-    CACHE.mkdir(parents=True, exist_ok=True)
+    if not config.try_mkdir(CACHE):
+        print("状态目录不可写，跳过记基线（下次会重复推）", file=sys.stderr)
+        return
     seen["last_run"] = datetime.now(CST).isoformat(timespec="seconds")
     SEEN.write_text(json.dumps(seen, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

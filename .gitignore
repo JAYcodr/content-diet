@@ -1,5 +1,14 @@
 __pycache__/
 *.pyc
-.env
-state/
 *.log
+
+# 凭据与访谈产物（profile.json / taste_profile.md / answers.json 是个人偏好数据）
+.env
+answers.json
+taste_profile.md
+profile.json
+
+# 状态目录若放在仓库内（沙箱 $HOME 不可写时的推荐做法）
+.content-diet/
+.cd-home/
+state/
