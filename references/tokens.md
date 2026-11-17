@@ -23,8 +23,10 @@ python3 setup/feishu_from_dsh_im.py --dry-run   # 先看能读到什么
 python3 setup/feishu_from_dsh_im.py             # 读到就写进 .env
 ```
 
-它读 `~/.dsh/integrations/dsh-feishu/config.json` 的 appId 和 `~/.dsh/.credentials.yaml` 里的 secret；
-读不到会打印手动配置的两行，不会报错。**卡片发不出去时的兜底**：dsh-im 还有独立的文字投递接口
+它按 dsh-im 的真实结构读：`~/.dsh/integrations/dsh-feishu/config.json` 的 `bots[].appId`
+（多个机器人时挑 `activated` 的那个），再用同一项的 `secretRef` 去 `~/.dsh/.credentials.yaml`
+的 `refs:` 里取对应密钥——`secretRef` 只是键名，**不能按位置取 refs 第一条**（那里可能是
+别的服务的 key）。读不到会打印手动配置的两行，不会报错。**卡片发不出去时的兜底**：dsh-im 还有独立的文字投递接口
 （`POST http://127.0.0.1:<port>/api/dsh-im/delivery/messages`，只支持 plain/markdown，不支持 interactive 卡片），
 可以当降级路径，但别写成默认——卡片是这个包的卖点。
 
