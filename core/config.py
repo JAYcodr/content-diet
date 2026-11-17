@@ -17,8 +17,6 @@ ENV_FILE_NAME = ".env"
 FEEDBACK_FILE_NAME = "feedback.json"
 DEFAULT_HOME = "~/.content-diet"
 
-# 可选代理：有些源（如 Bangumi）在部分网络下必须走代理才能访问
-PROXY = os.environ.get("CONTENT_DIET_PROXY") or os.environ.get("HTTPS_PROXY") or ""
 
 
 def hint(path: Path, exc: Exception) -> str:
@@ -122,6 +120,12 @@ def get(key: str, default: str = "") -> str:
     if value:
         return value
     return (load_env().get(key) or default).strip()
+
+
+# 可选代理：有些源（如 Bangumi）在部分网络下必须走代理才能访问。
+# 环境变量优先，其次 $CONTENT_DIET_HOME/.env（写在 .env 里换机最省事）；
+# 只读环境变量的话，"文档说可以写 .env" 就是句假话。
+PROXY = get("CONTENT_DIET_PROXY") or os.environ.get("HTTPS_PROXY") or ""
 
 
 def require(key: str, hint: str = "") -> str:
