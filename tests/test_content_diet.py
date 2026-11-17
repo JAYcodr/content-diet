@@ -198,6 +198,41 @@ class TestProfileDrivesAnime(unittest.TestCase):
         self.assertEqual(weekly.card_title(), "本周片单")
 
 
+class TestAiringAppliesScoreFloor(unittest.TestCase):
+    """评分地板在 airing 模式下也要生效（此前只有 rank 分支检查）。"""
+
+    def setUp(self):
+        reset_state()
+        write_profile()
+
+    def _subject(self, sid, bgm):
+        # 带一个内置命中的标签，确保 score > 0，从而能区分「被地板拦」与「被 score<=0 拦」
+        return {"id": sid, "name_cn": f"测试番{sid}", "name": f"test{sid}",
+                "tags": [{"name": "时间循环"}], "rating": {"score": bgm}}
+
+    def test_airing_skips_below_floor(self):
+        low, ok = self._subject(1, 5.5), self._subject(2, 7.0)
+        self.assertGreater(bangumi.score(low)["score"], 0, "前提：低分作品得先能过 score>0")
+        with mock.patch.object(bangumi, "search_subjects", return_value=[low, ok]):
+            out = bangumi.collect("airing", None, 10)
+        ids = [s["id"] for s in out["picked"]]
+        self.assertNotIn(1, ids, "5.5 分不该进 airing 片单")
+        self.assertIn(2, ids)
+
+    def test_airing_keeps_unrated(self):
+        """新番常常还没评分（0 分），不能因此被砍掉。"""
+        unrated = self._subject(3, 0)
+        with mock.patch.object(bangumi, "search_subjects", return_value=[unrated]):
+            out = bangumi.collect("airing", None, 10)
+        self.assertEqual([s["id"] for s in out["picked"]], [3])
+
+    def test_rank_still_applies_floor(self):
+        low = self._subject(4, 5.5)
+        with mock.patch.object(bangumi, "get", return_value={"data": [low]}):
+            out = bangumi.collect("rank", None, 10)
+        self.assertEqual(out["picked"], [])
+
+
 class TestProfileDrivesNovels(unittest.TestCase):
     def setUp(self):
         reset_state()

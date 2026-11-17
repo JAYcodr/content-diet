@@ -230,7 +230,9 @@ def collect(mode: str, year: str | None, limit: int) -> Dict[str, Any]:
             skipped += 1
             continue
         result = score(subject)
-        if mode == "rank" and result["bgm_score"] and result["bgm_score"] < MIN_BGM_SCORE:
+        # 评分地板不分模式：airing 也要拦。新番无评分时 bgm_score 为 0，truthy 判断放行；
+        # 有评分却低于地板的，不论 rank 还是 airing 都不进片单（曾因只判 rank 放过 5.5 分作品）。
+        if result["bgm_score"] and result["bgm_score"] < MIN_BGM_SCORE:
             skipped += 1
             continue
         if result["score"] <= 0:
