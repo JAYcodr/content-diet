@@ -35,12 +35,31 @@ git clone <this-repo> content-diet && cd content-diet
 python3 setup/doctor.py --fix          # 体检 + 生成 .env 模板
 cp .env.example ~/.content-diet/.env   # 或者直接编辑 doctor 生成的那份
 # 填好 FEISHU_*，然后
+python3 setup/doctor.py --send-test    # 真发一条，确认手机能收到
 python3 setup/init.py --answers answers.json
 python3 -m cards.weekly --preview      # 干跑看数据
 python3 -m cards.weekly                # 真发一张
 ```
 
 没有 `answers.json`？先跑 `python3 setup/init.py --example` 看模板，或者让 agent 访谈生成。
+手里只有一份旧的 `taste_profile.md`？照 `references/taste-schema.md` 反推 `answers.json`
+（`anime_watched` 留空），别重做一小时访谈。
+
+卡片发过之后想标「看过了 / 不想看」：
+
+```bash
+python3 setup/mark.py seen anime 葬送的芙莉莲
+python3 setup/mark.py skip novel 玄鉴仙族
+python3 setup/mark.py list
+```
+
+回写落在 `$CONTENT_DIET_HOME/feedback.json`，和档案合并生效（改档案不会冲掉它）。
+
+自检（全部离线，不连网不花钱）：
+
+```bash
+python3 -m unittest discover -s tests -v
+```
 
 ## 零凭据也能跑
 
@@ -48,31 +67,59 @@ python3 -m cards.weekly                # 真发一张
 没有飞书凭据时，卡片退化成打印文本（`--no-send`），体验不打折，只是不推送。
 
 可选凭据与"不给会少什么"：见 [`references/tokens.md`](references/tokens.md)。
+`BGM_API_TOKEN` / `QIDIAN_COOKIE` 目前只是留位（代码还没读它们），排重靠档案 + `setup/mark.py`。
+
+## 网络与代理（换机第一次跑就卡在这）
+
+这台机器上 Bangumi 的 API 和图床**直连不通**，不设代理时第一条命令就是：
+
+```
+RuntimeError: Bangumi 搜索失败: <urlopen error [Errno 101] Network is unreachable>
+```
+
+代码认两个变量，随便设一个：
+
+```bash
+export CONTENT_DIET_PROXY=http://127.0.0.1:7890     # 优先
+# 或者沿用系统代理
+export HTTPS_PROXY=http://127.0.0.1:7890
+```
+
+写在 `$CONTENT_DIET_HOME/.env` 里也可以（`CONTENT_DIET_PROXY=http://host:port`）。
+脚本对每个请求都是「先直连，失败再走代理一次」，所以设了不影响本来能直连的源
+（起点移动端、网易云、任天堂香港）。**不需要代理的环境就别设**——设了只是多一次失败重试。
+
+`doctor` 报源不可达时也会提醒这一条；`--json` 输出里 `proxy` 字段能看到当前生效值。
 
 ## 结构
 
 ```
 SKILL.md                  agent 入口：五步初始化 + 踩坑清单 + 排版硬规则
 setup/
-  doctor.py               体检：源可达性 / 凭据 / 卡片可用性
+  doctor.py               体检：源可达性 / 凭据 / 卡片可用性 / --send-test
   interview.md            访谈题本（跳过 / 大概 / 普通 / 细致 四档）
   init.py                 访谈结果 → profile.json + taste_profile.md + 排期建议
+  mark.py                 回写「已看 / 不想看」→ feedback.json
   feishu_chats.py         列出机器人所在会话，拿 chat_id
+  feishu_from_dsh_im.py   复用 dsh-im 已有机器人凭据（secretRef 精确取值）
   poster_sheet.py         海报拼成带编号对比图（判断"AI 垃圾"用）
 sources/
-  bangumi.py              当季番剧 + 搜索 + 收藏
-  qidian.py               起点月票榜 + 书架（Cookie 可选）
-  nintendo_hk.py          任天堂香港发售表
+  bangumi.py              当季番剧搜索 + 打分（排斥/加分词读档案）
+  qidian.py               起点月票榜（分类偏好、作者权重建档驱动）
+  nintendo_hk.py          任天堂香港发售表 + 口味分层 + seen 基线
 cards/
   weekly.py               片单卡（番剧 + 网文）
-  music.py                内核层新发行月报
+  music.py                内核层新发行月报（名单只从档案来）
   games.py                任天堂新作卡
 core/
-  config.py               路径与凭据（全部走 $CONTENT_DIET_HOME）
-  feishu.py               飞书卡片：token / 上传 / 发送 / 排版 helper
+  config.py               路径与凭据（全部走 $CONTENT_DIET_HOME）+ 档案 / 回写读取
+  feishu.py               飞书卡片：token / 上传 / 发送（检查返回码）/ 排版 helper
+  sent.py                 周期卡去重（同周期同内容只发一次）
+tests/
+  test_content_diet.py    离线用例：档案驱动筛选、失败非 0、去重、payload 契约
 references/
   tokens.md               每个 token 怎么拿、能多什么、不给少什么
-  taste-schema.md         answers.json 与 profile.json 字段说明
+  taste-schema.md         answers.json / profile.json / feedback.json 字段说明
 ```
 
 ## 几条设计取舍（不是没做，是想过）

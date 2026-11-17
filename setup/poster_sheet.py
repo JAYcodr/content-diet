@@ -59,8 +59,10 @@ def main() -> int:
     args = parser.parse_args()
 
     payload = json.loads(Path(args.data).read_text(encoding="utf-8"))
-    items = payload.get("items") or payload.get("games") or []
-    if args.only == "review" and payload.get("items"):
+    items = payload.get("games")
+    if items is None:
+        items = payload.get("items") or []
+    if args.only == "review" and items:
         items = [i for i in items if i.get("verdict") in ("review", "keep")]
     out_path = args.out or str(config.state_dir("nintendo") / "sheet.jpg")
     mapping = build(items, out_path, args.cols)

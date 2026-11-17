@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """内核层歌手的新发行月报（带专辑封面）→ 飞书卡片。
 
-口径来自 taste_profile 第九章：只推**内核层**（Aimer / 米津 / ヨルシカ / あたらよ / ヒグチアイ …），
-**陪伴型（周杰伦、林俊杰、邓紫棋…）绝不推**；给**专辑/完整作品**，不给单曲。
+**艺人只来自档案** ``core_artists``（访谈里「主动等新作」那批），空就不排这张卡——
+不回落任何内置名单，否则朋友装上先吃到作者口味。``companion_artists``（周杰伦那类
+陪伴型）即使被误写进内核层也会被一票否决。只给**专辑/完整作品**，不给单曲。
+``music_avoid`` 是风格描述，脚本判不了，只能靠访谈时不用它来筛。
 
 用法::
 
@@ -26,14 +28,18 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core import config
+_ROOT = Path(__file__).resolve().parent.parent      # 直接 python3 <script> 也能 import core
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from core import config, sent  # noqa: E402
 from core.feishu import card_v2, cols, footer, img, md, send_card, upload_image  # noqa: E402
 
 DEFAULT_CHAT = ""  # 运行时从 FEISHU_CHAT_ID 读
 CACHE = config.state_dir("music")
 ARTIST_CACHE = CACHE / "artists.json"
 KEY_CACHE = config.state_dir("feishu") / "img_keys.json"
-# 预置 id（2026-11 实查）：避免首次运行烧掉 12 次搜索触发网易云限流
+# 网易云艺人 id 速查表：只是省一次搜索（不是"默认推荐名单"，不在档案里的艺人永远不会被推）
 KNOWN_ARTIST_IDS = {
     "Aimer": 16152, "米津玄師": 159300, "ヨルシカ": 12390232, "あたらよ": 37687426,
     "ヒグチアイ": 942124, "EGOIST": 19353, "やなぎなぎ": 18303, "eill": 30109434,
@@ -43,15 +49,36 @@ KNOWN_ARTIST_IDS = {
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
 HDRS = {"Referer": "https://music.163.com/", "Cookie": "os=pc; appver=2.9.7", "User-Agent": UA}
 
-# 内核层（taste_profile 第九章）。陪伴型故意不在这里；profile.json 的 core_artists 可以覆盖。
-CORE_ARTISTS = None
-CORE_ARTISTS_DEFAULT = [
-    "Aimer", "米津玄師", "ヨルシカ", "あたらよ", "ヒグチアイ", "EGOIST",
-    "やなぎなぎ", "eill", "DAOKO", "宇多田ヒカル", "りりあ。", "こはならむ",
-]
 # 搜不到时换的查询词（网易云对某些艺人只认其中一种写法）
 ARTIST_ALIAS = {"りりあ。": "りりあ", "こはならむ": "Kohana Lam"}
 MIN_TRACKS = 3   # 少于 3 轨的当单曲/EP 处理，不算"完整作品"
+
+
+def core_artists() -> List[str]:
+    """内核层艺人：**只认档案** ``core_artists``。
+
+    空就是空——不回落到任何内置名单。别人的内核层跟你不一样，回落等于把作者口味
+    塞给用户。同一个艺人如果被写进了 ``companion_artists``，一票否决。
+    """
+    companions = {str(x).strip().lower() for x in config.profile_list("companion_artists")
+                  if str(x).strip()}
+    out: List[str] = []
+    for name in config.profile_list("core_artists"):
+        name = str(name).strip()
+        if name and name.lower() not in companions and name not in out:
+            out.append(name)
+    return out
+
+
+def album_excluded(album: Dict[str, Any]) -> bool:
+    """已看 / 不想看的专辑：feedback.json 的 album.seen / album.skip 命中任一写法都排掉。"""
+    excluded = {x.lower() for x in config.feedback_excludes("album")}
+    if not excluded:
+        return False
+    keys = {str(album.get("name") or "").lower(),
+            f"{album.get('artist','')} - {album.get('name','')}".lower(),
+            str(album.get("id") or "")}
+    return bool(keys & excluded)
 
 
 def api(url: str, *, retries: int = 3) -> Dict[str, Any]:
@@ -173,8 +200,11 @@ def img_key_for(path: Optional[Path]) -> Optional[str]:
 def collect(days: int) -> List[Dict[str, Any]]:
     today = dt.date.today()
     cache = load_artist_cache()
+    names = core_artists()
+    if not names:
+        return []
     found: List[Dict[str, Any]] = []
-    for name in (CORE_ARTISTS or config.profile_list("core_artists") or CORE_ARTISTS_DEFAULT):
+    for name in names:
         try:
             artist_id = resolve_artist(name, cache)
         except Exception as exc:  # noqa: BLE001
@@ -191,15 +221,20 @@ def collect(days: int) -> List[Dict[str, Any]]:
             print(f"专辑查询失败 {name}: {exc}", file=sys.stderr)
     if config.try_mkdir(ARTIST_CACHE.parent):
         ARTIST_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    # 同名专辑会被不同艺人重复收录，按 (名字, 日期) 去重
+    # 同名专辑会被不同艺人重复收录，按 (名字, 日期) 去重；已看/不想看的直接排掉
     seen, unique = set(), []
     for album in sorted(found, key=lambda a: a["date"], reverse=True):
         key = (album["name"].lower(), album["date"])
-        if key in seen:
+        if key in seen or album_excluded(album):
             continue
         seen.add(key)
         unique.append(album)
     return unique
+
+
+def card_title() -> str:
+    name = config.display_name()
+    return f"{name} · 新发行" if name else "新发行"
 
 
 def build_card(albums: List[Dict[str, Any]], days: int) -> Dict[str, Any]:
@@ -212,9 +247,9 @@ def build_card(albums: List[Dict[str, Any]], days: int) -> Dict[str, Any]:
         elements.append(cols((1, [img(key, size="120px 120px", radius="8px")]), (3, [md(body)]))
                         if key else md(body))
         elements.append({"tag": "hr"})
-    count = len(CORE_ARTISTS or config.profile_list("core_artists") or CORE_ARTISTS_DEFAULT)
+    count = len(core_artists())
     elements.append(footer(f"近 {days} 天 · 内核层 {count} 位 · 只收 ≥{MIN_TRACKS} 轨的作品 · 不含陪伴型艺人"))
-    return card_v2(title="铃 · 新发行", subtitle=f"近 {days} 天 · {len(albums)} 张", template="violet", elements=elements)
+    return card_v2(title=card_title(), subtitle=f"近 {days} 天 · {len(albums)} 张", template="violet", elements=elements)
 
 
 def main() -> int:
@@ -224,11 +259,16 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--preview", action="store_true")
     parser.add_argument("--no-send", action="store_true")
+    parser.add_argument("--force-send", action="store_true", help="忽略本月同内容去重")
     args = parser.parse_args()
 
     args.chat = args.chat or config.feishu_chat()
     if not args.preview and not args.no_send and not args.chat:
         raise SystemExit("缺少 FEISHU_CHAT_ID")
+    if not core_artists():
+        print("没有新作品可推：档案里 core_artists 为空（不回落默认名单，"
+              "先在 setup/init.py 的访谈里填内核层艺人）")
+        return 0
     albums = collect(args.days)[: args.limit]
     if not albums:
         print(f"近 {args.days} 天内核层没有新作品")
@@ -240,9 +280,17 @@ def main() -> int:
         return 0
     if args.no_send:
         return 0
+    key = sent.month_key("music")
+    digest = sent.fingerprint([(a["artist"], a["name"], a["date"]) for a in albums])
+    if not args.force_send:
+        previous = sent.already_sent(key, digest)
+        if previous:
+            print(f"本月这份月报已经发过（{previous}），跳过；要重发加 --force-send", file=sys.stderr)
+            return 0
     try:
         result = send_card(args.chat, build_card(albums, args.days))
         print(f"卡片已发送 {result.get('message_id')}", file=sys.stderr)
+        sent.mark_sent(key, digest, str(result.get("message_id")))
     except Exception as exc:  # noqa: BLE001
         print(f"发送失败: {exc}", file=sys.stderr)
         return 3

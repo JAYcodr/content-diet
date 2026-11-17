@@ -29,7 +29,11 @@ from typing import Any, Dict, List
 
 from core.feishu import card_v2, cols, footer, img, md, send_card, upload_image  # noqa: E402
 
-from core import config
+_ROOT = Path(__file__).resolve().parent.parent      # 直接 python3 <script> 也能 import core
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from core import config, sent  # noqa: E402  # noqa: E402
 KEY_CACHE = config.state_dir("feishu") / "img_keys.json"
 DEFAULT_CHAT = ""  # 运行时从 FEISHU_CHAT_ID 读
 
@@ -72,7 +76,10 @@ def short_date(raw: str) -> str:
 
 
 def build_card(payload: Dict[str, Any]) -> Dict[str, Any]:
-    games: List[Dict[str, Any]] = payload.get("games") or []
+    games: Any = payload.get("games")
+    if games is None:                      # 旧键 items（nintendo_hk 两个都写，这里也两个都读）
+        games = payload.get("items") or []
+    games = list(games)
     elements: List[Dict[str, Any]] = []
     order = {"hit": 0, "neutral": 1, "caution": 2}
     games = sorted(games, key=lambda g: (order.get(g.get("taste"), 1), g.get("date") or ""))
@@ -107,8 +114,11 @@ def build_card(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def text_summary(payload: Dict[str, Any]) -> str:
+    items = payload.get("games")
+    if items is None:
+        items = payload.get("items") or []
     lines = []
-    for game in payload.get("games") or []:
+    for game in items:
         lines.append(f"🎮 {game['title']}（{game.get('publisher','')}·{short_date(game.get('date',''))}）")
     return "\n".join(lines) or "本周没有值得推的新作"
 
@@ -119,6 +129,7 @@ def main() -> int:
     parser.add_argument("--chat", default=None)
     parser.add_argument("--preview", action="store_true", help="只打印卡片 JSON")
     parser.add_argument("--no-send", action="store_true", help="组卡但不发送")
+    parser.add_argument("--force-send", action="store_true", help="忽略同内容去重，强制再发一次")
     args = parser.parse_args()
 
     raw = Path(args.data).read_text(encoding="utf-8") if args.data else sys.stdin.read()
@@ -131,13 +142,29 @@ def main() -> int:
     print(text_summary(payload))
     if args.no_send:
         return 0
+    ids = sorted(payload_ids(payload))
+    key = "games-" + hashlib.sha256(",".join(ids).encode()).hexdigest()[:12]
+    digest = sent.fingerprint(card)
+    if not args.force_send:
+        previous = sent.already_sent(key, digest)
+        if previous:
+            print(f"这份内容已经发过（{previous}），跳过；要重发加 --force-send", file=sys.stderr)
+            return 0
     try:
         result = send_card(args.chat, card)
-        print(f"卡片已发送: {result.get('message_id') or result}", file=sys.stderr)
+        print(f"卡片已发送 {result.get('message_id')}", file=sys.stderr)
+        sent.mark_sent(key, digest, str(result.get("message_id")))
     except Exception as exc:  # noqa: BLE001
         print(f"卡片发送失败: {exc}", file=sys.stderr)
         return 3
     return 0
+
+
+def payload_ids(payload: Dict[str, Any]) -> List[str]:
+    items = payload.get("games")
+    if items is None:
+        items = payload.get("items") or []
+    return [str(g["id"]) for g in items if isinstance(g, dict) and g.get("id")]
 
 
 if __name__ == "__main__":

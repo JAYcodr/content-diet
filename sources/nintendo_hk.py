@@ -7,10 +7,15 @@
 
 用法::
 
-    nintendo_hk.py --new            # 只输出新增条目（JSON），同时下载海报
-    nintendo_hk.py --all            # 输出全部条目（不入状态）
-    nintendo_hk.py --commit         # 把本次 --new 的条目记入 seen（发完卡片再调）
+    nintendo_hk.py --new            # 只输出新增条目（JSON，键 games），同时下载海报
+    nintendo_hk.py --all            # 输出全部条目（不入状态、不写 pending）
+    nintendo_hk.py --commit         # 把上一次 --new 输出的条目记入 seen（发完卡片再调）
+    nintendo_hk.py --commit --from-payload payload.json   # 或按指定 payload 提交
     nintendo_hk.py --publishers     # 看发行商排行，便于维护名单
+
+``--commit`` 只提交「真处理过」的条目：payload 里的（发过卡 / agent 审过的）+ 判为 drop 的。
+白名单 keep 但这一轮没发出去的、没审的 review 都不进 seen，下周还会再出现。
+``--commit --all`` 已禁用：它会把没发出去的条目一次性标成已见。
 
 状态与海报都在 $CONTENT_DIET_HOME/nintendo/ 下
 """
@@ -29,10 +34,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 SCHEDULE_URL = "https://www.nintendo.com/hk/schedule"
-from core import config
+
+_ROOT = Path(__file__).resolve().parent.parent      # 直接 python3 sources/xxx.py 也能 import core
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from core import config  # noqa: E402
 
 CACHE = config.state_dir("nintendo")
 SEEN = CACHE / "seen.json"
+PENDING = CACHE / "pending.json"
 POSTERS = CACHE / "posters"
 PROXY = config.PROXY
 CST = timezone(timedelta(hours=8))
@@ -137,20 +148,47 @@ TASTE_HIT_GENRE = [
 TASTE_AVOID = ["排位", "電競", "电竞", "pvp", "大逃殺", "大逃杀", "吃雞", "吃鸡", "多人競技", "多人竞技"]
 TASTE_CAUTION = ["恐怖", "horror", "射擊", "射击", "無雙", "无双", "建造", "沙盒"]
 
+# 档案里可以追加词（profile.json）：
+#   game_series  系列名（权重等同内置系列）
+#   game_hits    品类词（权重等同内置品类）
+#   game_avoid   口味禁区（命中直接 drop）
+#   game_caution 要提醒但不丢（如恐怖、射击）
+_TASTE: Optional[Dict[str, List[str]]] = None
+
+
+def taste_lists() -> Dict[str, List[str]]:
+    """内置词表 ∪ 档案词表。改档案里的词，下一次跑就影响命中/禁区结果。"""
+    global _TASTE
+    if _TASTE is None:
+        _TASTE = {
+            "series": list(TASTE_HIT_SERIES) + [str(x) for x in config.profile_list("game_series")],
+            "genre": list(TASTE_HIT_GENRE) + [str(x) for x in config.profile_list("game_hits")],
+            "avoid": list(TASTE_AVOID) + [str(x) for x in config.profile_list("game_avoid")],
+            "caution": list(TASTE_CAUTION) + [str(x) for x in config.profile_list("game_caution")],
+        }
+    return _TASTE
+
+
+def refresh_taste() -> None:
+    """改完档案想让同一个进程重算时调用（cron 每次新进程，通常用不到）。"""
+    global _TASTE
+    _TASTE = None
+
 
 def taste(item: Dict[str, Any]) -> Dict[str, str]:
     """口味分层：hit（系列/品类命中）/ avoid（长期竞技打卡）/ caution（要提醒但不禁）/ neutral。"""
+    words = taste_lists()
     haystack = f"{item['title']} {item.get('publisher','')}".lower()
-    for word in TASTE_AVOID:
-        if word in haystack:
+    for word in words["avoid"]:
+        if word and word.lower() in haystack:
             return {"taste": "avoid", "taste_note": f"长期竞技/打卡，命中口味禁区（{word}）"}
-    hits = [w for w in TASTE_HIT_SERIES if w.lower() in haystack]
+    hits = [w for w in words["series"] if w and w.lower() in haystack]
     if hits:
         return {"taste": "hit", "taste_note": f"口味命中：{hits[0]}"}
-    hits = [w for w in TASTE_HIT_GENRE if w.lower() in haystack]
+    hits = [w for w in words["genre"] if w and w.lower() in haystack]
     if hits:
         return {"taste": "hit", "taste_note": f"品类命中：{hits[0]}"}
-    caution = [w for w in TASTE_CAUTION if w.lower() in haystack]
+    caution = [w for w in words["caution"] if w and w.lower() in haystack]
     if caution:
         return {"taste": "caution", "taste_note": f"口味留意：{caution[0]}（未必禁区，按手法判断）"}
     return {"taste": "neutral", "taste_note": ""}
@@ -249,6 +287,30 @@ def save_seen(seen: Dict[str, Any]) -> None:
     SEEN.write_text(json.dumps(seen, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def save_pending(payload: Dict[str, Any]) -> None:
+    """记住上一次 ``--new`` 到底输出了什么——``--commit`` 只按这份记录提交。"""
+    if not config.try_mkdir(CACHE):
+        return
+    PENDING.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def payload_ids(payload: Dict[str, Any]) -> set:
+    """接受 ``games`` 与旧键 ``items``，两种都能读。"""
+    items = payload.get("games")
+    if items is None:
+        items = payload.get("items")
+    return {str(g["id"]) for g in (items or []) if isinstance(g, dict) and g.get("id")}
+
+
+def load_pending() -> Dict[str, Any]:
+    if not PENDING.exists():
+        return {}
+    try:
+        return json.loads(PENDING.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--new", action="store_true", help="只输出新增（默认）")
@@ -295,40 +357,58 @@ def main() -> int:
         record = {**item, **verdict}
         if args.commit:
             continue
+        if verdict["verdict"] == "drop":
+            continue          # 黑名单 / 噪声词：只在 commit 时记进 seen，不进 payload、不进卡片
         if verdict["verdict"] == "review":
             reviewed += 1
             if reviewed > args.limit_review:
                 continue  # 超出审阅预算的先不打扰，下次还能看到
-        if not args.no_posters and verdict["verdict"] != "drop":
+        if not args.no_posters:
             path = poster_path(item)
             record["poster_file"] = str(path) if path else None
         out.append(record)
 
     if args.commit:
+        if args.all:
+            print("--commit 不再接受 --all：它会把这一轮窗口里没发出去的条目（白名单 keep、"
+                  "没审的 review）一次性记成已见，下周就不再出现。\n"
+                  "改成 --commit（提交上一次 --new 的输出）或 --commit --from-payload <path>。",
+                  file=sys.stderr)
+            return 2
+        fresh_ids = {i["id"] for i in fresh}
         if args.from_payload:
-            # 只记「这一轮处理过」的：payload 里的 + 判为 drop/keep 的。
-            # 没被审阅的 review 条目留空，下周还会再出现一次，不会被悄悄跳过。
-            payload_ids = set()
             try:
                 payload = json.loads(Path(args.from_payload).read_text(encoding="utf-8"))
-                payload_ids = {g["id"] for g in payload.get("games", []) if g.get("id")}
             except Exception as exc:  # noqa: BLE001
                 print(f"读 payload 失败：{exc}", file=sys.stderr)
-            committed = {i["id"] for i in fresh
-                         if i["id"] in payload_ids or classify(i)["verdict"] != "review"}
+                return 2
+            target_ids = payload_ids(payload)
         else:
-            committed = {i["id"] for i in fresh}
+            target_ids = payload_ids(load_pending())
+            if not target_ids:
+                print("没有可提交的记录：先跑一次 --new（它会写 pending.json），"
+                      "或直接 --commit --from-payload <path>。", file=sys.stderr)
+                return 2
+        # 只提交「真处理过」的：payload 里的（发过卡 / agent 审过的）+ 判为 drop 的
+        # （黑名单是稳定判断，记下来不会误伤下周的候选）。白名单 keep 但没发出去的不记。
+        drops = {i["id"] for i in fresh if classify(i)["verdict"] == "drop"}
+        committed = (target_ids & fresh_ids) | drops
         seen["ids"] = sorted(known | committed)
         save_seen(seen)
-        print(f"已记入 seen：新增 {len(committed)} 条，累计 {len(seen['ids'])} 条")
+        print(f"已记入 seen：本次 {len(committed)} 条（payload {len(target_ids & fresh_ids)} + "
+              f"drop {len(drops)}），累计 {len(seen['ids'])} 条")
         return 0
 
     payload = {
         "fetched_at": datetime.now(CST).isoformat(timespec="seconds"),
         "total_on_page": len(items),
         "new_count": len(fresh),
+        # 契约键是 games，items 是同一份数据的旧键（兼容上一版 cards.games / poster_sheet）
+        "games": out,
         "items": out,
     }
+    if not args.all:
+        save_pending(payload)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
 

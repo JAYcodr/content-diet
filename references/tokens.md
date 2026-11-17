@@ -70,33 +70,51 @@ FEISHU_APP_SECRET=xxxxxxxx
 FEISHU_CHAT_ID=oc_xxxxxxxx
 ```
 
+### 1.4 验证：真发一条
+
+凭据填对 ≠ 能送到（chat_id 填错、机器人没进群，doctor 全绿也会空手）。所以：
+
+```bash
+python3 setup/doctor.py --send-test
+```
+
+输出 `✓ 凭据有效，消息已送达 oc_xxx（message_id om_xxx）` 且手机真收到，才算这条链路通了。
+失败时它会告诉你按什么顺序查（chat_id 前缀、机器人是否在群里、应用是否发过版本 + `im:message`）。
+另外 `feishu_from_dsh_im.py --verify` 会在写 `.env` 前后各换一次 `tenant_access_token`，
+证明 secret 真的对（不是「读到了一个 32 字符的字符串」）。
+
 > 常见报错：`99991663` 权限没开或版本没发布；`230002` 机器人不在该会话里（先拉进群）。
 
 ---
 
-## 2. Bangumi 个人令牌（可选）
+## 2. Bangumi 个人令牌（可选，**当前代码还没用**）
 
-没有它也能抓当季番剧，只是：限额低、读不到用户收藏（排重靠 profile 里的名单）。
+填了也不生效——现在的 `sources/bangumi.py` 只打公开接口，没有带 `Authorization`，
+也没有接收藏接口。真要用上它（提高限流 + 读收藏做排重）还得改代码，属于待办。
+
+想让番剧排重更准，眼下更实际的做法是：访谈时把「已看」写进档案，之后用
+`python3 setup/mark.py seen anime 作品名` 逐条回写。
 
 1. 登录 <https://bgm.tv>
 2. 打开 <https://next.bgm.tv/demo/access-token> → 生成 Access Token
-3. 填 `BGM_API_TOKEN=...`
+3. 填 `BGM_API_TOKEN=...`（留位；doctor 会标成「已填写，但代码还没读」）
 
 > 令牌是 Bearer token，只读公开数据 + 自己的收藏，不会改任何东西。
 
 ---
 
-## 3. 起点 Cookie（可选，但强烈建议）
+## 3. 起点 Cookie（可选，**当前代码还没用**）
 
-没有它：网文按榜单纯推，**不知道用户在追什么，会重复推**。
+同样留位：`sources/qidian.py` 只读移动端月票榜页面，不读 Cookie，也没有「在追」接口。
+「不知道用户在追什么」这件事靠档案（访谈里的在追名单）+ `setup/mark.py` 回写解决，
+不是靠 Cookie。
 
 1. 浏览器登录 <https://www.qidian.com>
 2. F12 → Network → 刷新 → 点任意请求 → 复制 **Request Headers 里的 Cookie 整串**
 3. 关键项：`ywguid`、`ywkey`、`ywopenid`（其余可带可不带）
 4. 填 `QIDIAN_COOKIE=ywguid=...; ywkey=...; ywopenid=...`
 
-> 有效期通常几周到几个月。**过期表现**：书架抓取返回 0 本 / 登录态消失。
-> 更新方式：重新复制一次 Cookie 覆盖即可，不用改代码。
+> 有效期通常几周到几个月。将来接「书架 / 在追」时会用到；现在填了 doctor 也只标「留位」。
 
 ---
 
@@ -124,6 +142,8 @@ CONTENT_DIET_PROXY=http://127.0.0.1:7890
 | 缺什么 | 结果 |
 |---|---|
 | 飞书三项 | 卡片发不出去，`--no-send` / `--preview` 仍可用（打印文本 / JSON） |
-| `BGM_API_TOKEN` | 番剧段正常，但不禁"已看"，可能推重复 |
-| `QIDIAN_COOKIE` | 网文段正常，但可能推用户正在追的书 |
-| `CONTENT_DIET_PROXY` | 直连不通的源会整段缺失（doctor 会标出来） |
+| `BGM_API_TOKEN` | **没有变化**（代码还没读它）；番剧排重靠档案 + `setup/mark.py` |
+| `QIDIAN_COOKIE` | **没有变化**（代码还没读它）；在追名单靠访谈 + `setup/mark.py` |
+| 档案里的 `core_artists` | 音乐月报直接跳过（不回落默认艺人名单） |
+| `CONTENT_DIET_PROXY` | 直连不通的源会整段缺失（doctor 会标出来并提示设代理） |
+| 状态目录不可写 | 出卡照旧，但封面每次重下、`seen` / 回写 / 去重不落地（stderr 会提示一次） |

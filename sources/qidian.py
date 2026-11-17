@@ -18,14 +18,17 @@ from __future__ import annotations
 import argparse
 import html as html_lib
 import json
-import os
 import re
 import sys
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from core import config
+_ROOT = Path(__file__).resolve().parent.parent      # 直接 python3 <script> 也能 import core
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from core import config  # noqa: E402
 
 UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
       "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
@@ -37,12 +40,39 @@ CATS = {
     21: "玄幻", 22: "仙侠",
 }
 
-# 作者加成（他明确追/认可的）
-AUTHORS = {
-    "远瞳": 5, "爱潜水的乌贼": 3, "榴弹怕水": 2, "黑山老鬼": 1, "轻泉流响": 1,
-}
-# 弃书 / 已读名单来自 profile.json（novels_seen），不重复推荐
-DROPPED = {str(x) for x in config.profile_list("novels_seen")}
+# 作者加成：来自 profile.json 的 ``novel_authors``（{"远瞳": 5, ...}），不再内置具体作者名。
+def author_weights() -> Dict[str, float]:
+    profile = config.loading_profile() or {}
+    raw = profile.get("novel_authors")
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, float] = {}
+    for name, weight in raw.items():
+        try:
+            out[str(name).strip()] = float(weight)
+        except (TypeError, ValueError):
+            continue
+    return {k: v for k, v in out.items() if k}
+
+# 排重名单：profile.json 的 novels_seen（已读 ∪ 弃书）∪ feedback.json 的 novel.seen/skip。
+# 做成函数而不是模块常量：回写之后同一次进程里再算一遍也能生效。
+_DROPPED: Optional[set] = None
+
+
+def dropped() -> set:
+    global _DROPPED
+    if _DROPPED is None:
+        names = {str(x) for x in config.profile_list("novels_seen")}
+        names |= {str(x) for x in config.profile_list("novels_read")}
+        names |= set(config.feedback_excludes("novel"))
+        _DROPPED = names
+    return _DROPPED
+
+
+def preferred_categories() -> set:
+    """档案里的偏好分类（中文名，如 科幻 / 轻小说）。空 = 不做分类加权。"""
+    return {str(x).strip() for x in config.profile_list("novel_categories") if str(x).strip()}
+
 
 # 书架种子：已在追的书不重复推荐，同时用来算分类偏好
 SHELF_PATH = str(config.state_dir("qidian") / "bookshelf_seed.json")
@@ -134,9 +164,10 @@ def score(book: Dict[str, Any]) -> Dict[str, Any]:
     text = f"{book['title']} {book['summary']}"
     reasons: List[str] = []
     total = 0.0
-    if book["author"] in AUTHORS:
-        total += AUTHORS[book["author"]]
-        reasons.append(f"+{AUTHORS[book['author']]} 作者 {book['author']}")
+    authors = author_weights()
+    if book["author"] in authors:
+        total += authors[book["author"]]
+        reasons.append(f"+{authors[book['author']]:g} 作者 {book['author']}")
     for word, weight in HITS.items():
         if word in text:
             total += weight
@@ -145,6 +176,9 @@ def score(book: Dict[str, Any]) -> Dict[str, Any]:
         if word in text:
             total -= weight
             reasons.append(f"-{weight} {word}")
+    if book.get("category") and book["category"] in preferred_categories():
+        total += 2
+        reasons.append(f"+2 档案偏好分类 {book['category']}")
     fav = SHELF_CATS.get(book.get("category", ""), 0)
     if fav >= 5:
         total += 2
@@ -177,7 +211,7 @@ def main() -> int:
         if book["id"] in seen:
             continue
         seen.add(book["id"])
-        if book["title"] in DROPPED or book["title"] in SHELF_TITLES:
+        if book["title"] in dropped() or book["title"] in SHELF_TITLES:
             continue
         book.update(score(book))
         if book["score"] <= 0:

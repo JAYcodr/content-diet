@@ -28,15 +28,22 @@ from core import config  # noqa: E402
 
 DEFAULTS = {
     "depth": "normal",
+    "name": "",
     "lines": {},
     "anime_watched": [],
     "anime_avoid": [],
+    "anime_hits": [],
     "novels_read": [],
     "novels_dropped": [],
     "novel_categories": [],
+    "novel_authors": {},
     "core_artists": [],
     "companion_artists": [],
     "music_avoid": [],
+    "game_series": [],
+    "game_hits": [],
+    "game_avoid": [],
+    "game_caution": [],
     "voice": {},
     "notes": "",
 }
@@ -88,6 +95,7 @@ def example() -> dict:
     return {
         **DEFAULTS,
         "depth": "normal",
+        "name": "文杰",
         "lines": {
             "A": "史诗时间感：大时间尺度下的个体命运",
             "B": "延迟情感传递：情感要介质、有距离",
@@ -96,12 +104,18 @@ def example() -> dict:
         },
         "anime_watched": ["葬送的芙莉莲", "摇曳露营", "孤独摇滚"],
         "anime_avoid": ["长期 PVP 打卡", "第一人称生存恐怖"],
+        "anime_hits": ["吹奏乐", "政治博弈"],
         "novels_read": ["黎明之剑", "这游戏也太真实了"],
         "novels_dropped": ["玄鉴仙族"],
         "novel_categories": ["科幻", "轻小说"],
+        "novel_authors": {"远瞳": 5, "爱潜水的乌贼": 3},
         "core_artists": ["Aimer", "ヨルシカ"],
         "companion_artists": ["周杰伦", "林俊杰"],
         "music_avoid": ["电音 drop", "偶像团口水副歌"],
+        "game_series": ["薩爾達", "異度神劍"],
+        "game_hits": ["模擬", "戰棋"],
+        "game_avoid": ["排位", "大逃殺"],
+        "game_caution": ["恐怖", "射擊"],
         "voice": {"anchor": "今汐", "f0": "200-260Hz", "centroid": "1600-2100Hz", "note": "低音区+窄音域+气声颗粒"},
         "notes": "旁白不要给表演指令；角色台词一句一条。",
     }
@@ -151,11 +165,11 @@ def cron_plan(answers: dict) -> list:
          "cmd": ("python3 sources/nintendo_hk.py --new > /tmp/nk.json"
                  " && python3 setup/poster_sheet.py --data /tmp/nk.json"
                  " && python3 -m cards.games --data /tmp/nk.json"
-                 " && python3 sources/nintendo_hk.py --commit --all --from-payload /tmp/nk.json"),
+                 " && python3 sources/nintendo_hk.py --commit --from-payload /tmp/nk.json"),
          "steps": ["抓取 + 下载海报 + 标注 review",
                    "海报拼图给 agent 判断「是不是 AI 垃圾」，必要时删条目",
                    "发卡",
-                   "记基线（不记会重复推）"],
+                   "记基线：只提交 payload 里真正发出去的（--commit 不再接受 --all）"],
          "note": "拆成四步更好：agent 要在第 2 步之后看一眼再发。没有新增时第 1 步输出 new_count=0，直接跳过发卡"},
     ]
     if answers.get("core_artists"):
@@ -181,18 +195,28 @@ def main() -> int:
         parser.error("需要 --answers（或 --example 看模板）")
 
     answers = {**DEFAULTS, **json.loads(Path(args.answers).read_text(encoding="utf-8"))}
+    name = (answers.get("name") or args.name or "").strip()
+    if name in ("你", "用户"):
+        name = ""       # 占位称呼不进档案：卡片标题宁可中性，也不要「你 · 本周片单」
     profile = {
         "generated_at": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        "name": name,
         "depth": answers["depth"],
         "lines": answers["lines"],
         "anime_watched": answers["anime_watched"],
         "anime_avoid": answers["anime_avoid"],
+        "anime_hits": answers["anime_hits"],
         "novels_read": answers["novels_read"],
         "novels_dropped": answers["novels_dropped"],
         "novel_categories": answers["novel_categories"],
+        "novel_authors": answers["novel_authors"],
         "core_artists": answers["core_artists"],
         "companion_artists": answers["companion_artists"],
         "music_avoid": answers["music_avoid"],
+        "game_series": answers["game_series"],
+        "game_hits": answers["game_hits"],
+        "game_avoid": answers["game_avoid"],
+        "game_caution": answers["game_caution"],
         "voice": answers["voice"],
         "notes": answers["notes"],
     }
@@ -200,7 +224,7 @@ def main() -> int:
     profile["novels_seen"] = sorted(set(answers["novels_read"]) | set(answers["novels_dropped"]))
     profile["anime_watched_all"] = sorted(set(answers["anime_watched"]))
 
-    md = render(answers, args.name)
+    md = render(answers, name or "你")
     targets = {
         "profile": config.profile_path(),
         "taste": config.home() / "taste_profile.md",
@@ -232,6 +256,8 @@ def main() -> int:
         print(f"      {item['cmd']}")
         for step in item.get("steps", []):
             print(f"      - {step}")
+    print("\n回写「已看 / 不想看」：python3 setup/mark.py seen anime 作品名"
+          "（写进 feedback.json，下一轮筛选自动排掉；改档案不会冲掉）")
     return 0
 
 

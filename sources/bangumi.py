@@ -19,21 +19,22 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, Dict, List
 
-from core import config
+_ROOT = Path(__file__).resolve().parent.parent      # 直接 python3 <script> 也能 import core
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from core import config  # noqa: E402
 
 API = "https://api.bgm.tv"
 PROXY = config.PROXY
 UA = "hermes-agent/1.0 (anime-pick; personal use)"
-
-# 兜底名单：profile.json 里没有 anime_watched 时才会用到
-FALLBACK_SEEN: List[str] = []   # 没有 profile 时不排重（由 init 访谈补齐）
 
 # 命中向：系列/作者/母题。权重 3 = 强命中，2 = 中，1 = 弱
 HITS: Dict[str, int] = {
@@ -134,12 +135,32 @@ def fields(subject: Dict[str, Any]) -> tuple[str, str]:
     return " ".join(tags).lower(), title.lower()
 
 
+def hit_terms() -> Dict[str, int]:
+    """内置命中词 + 档案 ``anime_hits``（用户自己补的词，权重 2）。"""
+    terms = dict(HITS)
+    for word in config.profile_list("anime_hits"):
+        word = str(word).strip()
+        if word and word.lower() not in terms:
+            terms[word.lower()] = 2
+    return terms
+
+
+def avoid_terms() -> Dict[str, str]:
+    """内置忌讳 + 档案 ``anime_avoid``——档案里的排斥信号**逐条生效**，不是只写给人看。"""
+    terms = dict(AVOID)
+    for word in config.profile_list("anime_avoid"):
+        word = str(word).strip()
+        if word and word.lower() not in terms:
+            terms[word.lower()] = f"档案排斥信号（{word}）"
+    return terms
+
+
 def score(subject: Dict[str, Any]) -> Dict[str, Any]:
     tag_text, title_text = fields(subject)
     bgm = float((subject.get("rating") or {}).get("score") or 0)
     reasons: List[str] = []
     total = 0.0
-    for word, weight in HITS.items():
+    for word, weight in hit_terms().items():
         key = word.lower()
         if key in tag_text:
             total += weight
@@ -147,7 +168,7 @@ def score(subject: Dict[str, Any]) -> Dict[str, Any]:
         elif key in title_text:
             total += weight / 2          # 只在标题里命中，折半
             reasons.append(f"+{weight / 2:.1f} {word}(标题)")
-    for word, why in AVOID.items():
+    for word, why in avoid_terms().items():
         key = word.lower()
         if key in tag_text or key in title_text:
             total -= 4
@@ -165,12 +186,23 @@ _WATCHED: Optional[set] = None
 
 
 def watched() -> set:
-    """已看集合：优先取 profile.json 的 anime_watched，其次用兜底名单。"""
+    """已看集合：档案的 anime_watched / anime_watched_all ∪ feedback 的 anime.seen/skip。
+
+    ``refresh()`` 让回写之后同一个进程里也能生效（cron 每次是新进程，但测试和手动补跑会用得上）。
+    """
     global _WATCHED
     if _WATCHED is None:
         names = [str(x) for x in config.profile_list("anime_watched")]
-        _WATCHED = {n.lower() for n in (names or FALLBACK_SEEN)}
+        names += [str(x) for x in config.profile_list("anime_watched_all")]
+        names += config.feedback_excludes("anime")
+        _WATCHED = {n.strip().lower() for n in names if n and n.strip()}
     return _WATCHED
+
+
+def refresh() -> None:
+    """丢掉已看集合的缓存（回写 / 改档案之后调用）。"""
+    global _WATCHED
+    _WATCHED = None
 
 
 def seen(subject: Dict[str, Any]) -> bool:

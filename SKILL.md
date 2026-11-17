@@ -23,10 +23,12 @@ metadata:
 | `cards/music.py` | 内核层歌手新专辑月报（网易云公开接口） | 不需要 |
 | `cards/weekly.py` | 片单卡：番剧 + 网文 | 需要飞书凭据 |
 | `cards/games.py` | 任天堂新作卡（带海报） | 需要飞书凭据 |
-| `setup/doctor.py` | 体检：源可达性、凭据、卡片可用性 | — |
+| `setup/doctor.py` | 体检：源可达性、凭据、卡片可用性、`--send-test` 真发一条 | — |
 | `setup/init.py` | 把访谈结果写成 profile.json + taste_profile.md，并给出排期 | — |
+| `setup/mark.py` | 回写「已看 / 不想看」（feedback.json），参与下一轮排重 | — |
 
 **零凭据也能跑**：所有数据源都是公开页面/接口，没凭据时卡片退化成打印文本（`--no-send`）。
+**没有任何内置口味名单**：艺人、作者、排斥词、分类全部来自档案；档案空就不筛（音乐卡直接不排）。
 
 ## 1. 初始化五步（按顺序，别跳）
 
@@ -64,6 +66,19 @@ python3 setup/doctor.py --fix
 
 把答案整理成 `answers.json`（字段见 `references/taste-schema.md`，或 `python3 setup/init.py --example` 看模板）。
 
+**已经有 `taste_profile.md`（换机 / 重装）？别重做访谈**，先反推 `answers.json`：
+
+1. 打开那份 md，按 `references/taste-schema.md` 的表格逐字段对号入座——
+   「内核层」→ `core_artists`、「陪伴型」→ `companion_artists`、「已读 / 在追」→ `novels_read`、
+   「弃书」→ `novels_dropped`、「偏好分类」→ `novel_categories`。`setup/init.py --answers` 现成支持。
+2. **`anime_watched` 一律留空**，等 `bgm_sync` 补齐。md 里「番剧」那节的命中列表是推荐结果，
+   不是已看记录；抄进去的直接后果是「推给你的全是你已经看过的」。宁可这几周多推两条重复的。
+3. 反推完把 `answers.json` 给用户过一眼再落盘——人名书名抄错比空着更难发现。
+
+**回写比访谈重要**：卡片发出去之后，用户说「这个看过了 / 不想看」，
+就 `python3 setup/mark.py seen anime 作品名`（或 `skip`）记下来，下一轮筛选自动排掉。
+这条路径不依赖卡片按钮，也不依赖任何登录。
+
 ### 第 3 步：生成档案
 
 ```bash
@@ -82,14 +97,15 @@ python3 setup/init.py --answers answers.json --name "用户称呼"
 读 `references/tokens.md`，逐项告诉用户：怎么拿、要几分钟、不给的话损失什么。
 **不要一次甩六个**——先只要飞书的三个（否则发不出卡片），其余按用户意愿追加。
 
-| 凭据 | 必需性 | 不给的后果 |
+| 凭据 | 必需性 | 给了之后真实效果 |
 |---|---|---|
-| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID` | 必需 | 发不出卡片，只能打印文本 |
-| `BGM_API_TOKEN` | 可选 | 番剧仍能抓，但看不了用户收藏、限额更低 |
-| `QIDIAN_COOKIE` | 可选 | 网文按榜单推，不知道用户在追什么，会重复推 |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` / `FEISHU_CHAT_ID` | 必需 | 发卡片；`doctor --send-test` 能证明这条链路通 |
+| `BGM_API_TOKEN` | 可选 | **当前代码没读它**（只留位：限流 + 收藏接口是待办）；填了 doctor 会标「已填写，但代码还没读」 |
+| `QIDIAN_COOKIE` | 可选 | **当前代码没读它**；在追名单靠档案 + `setup/mark.py` 回写，不靠 Cookie |
 | `NETEASE_COOKIE` | 可选 | 暂时用不到，留位 |
 
 凭据只进 `$CONTENT_DIET_HOME/.env`（600），**不要打进聊天、不要写进仓库**。
+填完飞书三项，**一定跑一次 `python3 setup/doctor.py --send-test`**——凭据在 ≠ 机器人那个群里。
 
 ### 第 5 步：排期 + 首轮试跑
 
@@ -112,8 +128,16 @@ python3 -m cards.weekly
 | 卡 | 频率 | 命令 |
 |---|---|---|
 | 片单卡（番剧 + 网文） | 每周日 20:00 | `python3 -m cards.weekly` |
-| 任天堂新作 | 每周四 20:00 | `sources/nintendo_hk.py --new` → 审查 → `python3 -m cards.games --data payload.json` |
-| 音乐新发行 | 每月 1 日 10:00 | `python3 -m cards.music --days 45` |
+| 任天堂新作 | 每周四 20:00 | `sources/nintendo_hk.py --new > nk.json` → 审查 → `python3 -m cards.games --data nk.json` → `nintendo_hk.py --commit --from-payload nk.json` |
+| 音乐新发行 | 每月 1 日 10:00 | `python3 -m cards.music --days 45`（档案里没 `core_artists` 时这张卡不存在） |
+
+**任天堂卡别用 `--commit --all`**：它会把这一轮没发出去的白名单条目、没审的 review
+一次性记成已见，下周就不再出现。记基线只提交「真发出去的」：`--commit --from-payload <那份 payload>`
+（发卡前删掉 AI 垃圾条目后，payload 就是「真处理过」的名单）；不传 path 时 `--commit` 读上一次
+`--new` 自动写的 `pending.json`。
+
+**周期卡自带去重**：同一周（月）同一份内容补跑第二次会直接跳过并打印上次的 `message_id`，
+真要重发加 `--force-send`。
 
 **静默原则**：没有新内容就一个字都不发（脚本空输出 = 不投递）。用户嫌吵的话，先砍频率，别砍卡片质量。
 
@@ -146,13 +170,13 @@ python3 -m cards.weekly
 
 ```python
 from core.feishu import card_v2, md, img, cols, footer, send_card, upload_image
-card = card_v2(title="铃 · 本周片单", subtitle="番剧 4 · 网文 4",
+card = card_v2(title="本周片单", subtitle="番剧 4 · 网文 4",   # 标题别写人名，要写就取 config.display_name()
                template="turquoise", elements=[
                    md("**📺 番剧**"),
                    cols((1, [img(key, size="96px 136px", radius="6px")]), (3, [md("...")])),
                    footer("数据源 Bangumi / 起点月票榜"),
                ])
-send_card(chat_id, card)
+send_card(chat_id, card)      # 返回 data（含 message_id）；code != 0 会抛异常，不会静默成功
 ```
 
 硬规则（都踩过）：
@@ -172,8 +196,12 @@ send_card(chat_id, card)
 ## 6. 交付前自检
 
 ```bash
-python3 setup/doctor.py                 # 源与凭据
+python3 -m unittest discover -s tests -v     # 31 条离线用例：档案驱动、失败非 0、去重、契约
+python3 setup/doctor.py                      # 源与凭据
+python3 setup/doctor.py --send-test          # 真发一条，证明手机能收到
 python3 -m cards.weekly --preview | head -20
 python3 -m cards.music --days 60 --no-send
 ```
-三条都过，再真发一张给用户看。
+
+`tests/` 全部离线（不连网、不花钱、不碰真实状态目录），改完筛选逻辑先跑它。
+都过之后再真发一张给用户看。

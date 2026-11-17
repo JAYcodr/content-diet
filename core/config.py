@@ -6,12 +6,15 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 ENV_FILE_NAME = ".env"
+FEEDBACK_FILE_NAME = "feedback.json"
 DEFAULT_HOME = "~/.content-diet"
 
 # 可选代理：有些源（如 Bangumi）在部分网络下必须走代理才能访问
@@ -55,8 +58,31 @@ def try_mkdir(path: Path) -> bool:
     try:
         path.mkdir(parents=True, exist_ok=True)
         return True
-    except OSError:
+    except OSError as exc:
+        warn_unwritable(path, exc)
         return False
+
+
+_WARNED_UNWRITABLE: set = set()
+
+
+def warn_unwritable(path: Path, exc: Exception) -> None:
+    """同一个目录只提示一次。
+
+    缓存/基线写不进去可以降级，但**不能一声不响**——否则用户看到的是
+    「每周都慢、封面偶尔失败、昨天推过的又推一次」，没有任何线索指向目录不可写。
+    """
+    key = str(path)
+    if key in _WARNED_UNWRITABLE:
+        return
+    _WARNED_UNWRITABLE.add(key)
+    print(
+        f"⚠ 状态目录不可写：{path}（{exc.__class__.__name__}: {exc}）\n"
+        "  缓存与排重基线降级：封面每次重下、seen / 已看回写不落地。改运行：\n"
+        "  export CONTENT_DIET_HOME=$PWD/.content-diet\n"
+        "  或让 doctor 报一次：python3 setup/doctor.py",
+        file=sys.stderr,
+    )
 
 
 def can_write(path: Path) -> bool:
@@ -108,13 +134,17 @@ def require(key: str, hint: str = "") -> str:
     return value
 
 
-def state_dir(name: str = "") -> Path:
-    """缓存/状态目录：尽量建，建不了也返回路径——只读环境下降级，不崩。"""
+def state_dir(name: str = "", *, quiet: bool = False) -> Path:
+    """缓存/状态目录：尽量建，建不了也返回路径——只读环境下降级，不崩。
+
+    但降级要留话：失败时打一次 stderr 提示（``quiet=True`` 由调用方自己负责说明）。
+    """
     path = home() / name if name else home()
     try:
         path.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
+    except OSError as exc:
+        if not quiet:
+            warn_unwritable(path, exc)
     return path
 
 
@@ -140,6 +170,49 @@ def profile_list(key: str) -> list:
     profile = loading_profile() or {}
     value = profile.get(key)
     return value if isinstance(value, list) else []
+
+
+def display_name() -> str:
+    """卡片标题用的称呼。没档案或没填就返回空串——标题退化成中性，绝不硬编码人名。"""
+    profile = loading_profile() or {}
+    return str(profile.get("name") or "").strip()
+
+
+# ---------------------------------------------------------------- 反馈回写（已看 / 不想看）
+# 存在 profile.json 旁边，不污染访谈档案：档案是「他说的」，feedback 是「用出来的」。
+def feedback_path() -> Path:
+    return home() / FEEDBACK_FILE_NAME
+
+
+def load_feedback() -> dict:
+    """{'anime': {'seen': [...], 'skip': [...]}, 'novel': {...}, 'album': {...}}"""
+    path = feedback_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def feedback_list(category: str, kind: str) -> List[str]:
+    """某一类的已看 / 不想看名单（kind: seen / skip）。缺失返回空列表。"""
+    bucket = (load_feedback().get(category) or {})
+    if not isinstance(bucket, dict):
+        return []
+    return [str(x).strip() for x in (bucket.get(kind) or []) if str(x).strip()]
+
+
+def feedback_excludes(category: str) -> List[str]:
+    """排重用的合并名单：已看 ∪ 不想看。"""
+    return feedback_list(category, "seen") + feedback_list(category, "skip")
+
+
+def save_feedback(data: dict) -> Path:
+    path = ensure_writable(home()) / FEEDBACK_FILE_NAME
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def save_env(values: Dict[str, str]) -> Path:

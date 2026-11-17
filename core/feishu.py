@@ -80,9 +80,24 @@ def upload_image(path: str) -> str:
 
 
 def send_card(chat_id: str, card: dict) -> dict:
-    return _api("/im/v1/messages?receive_id_type=chat_id", token(), {
+    """发卡片，返回飞书 ``data``（含 ``message_id``）。
+
+    业务码不是 0（HTTP 200 也算失败）、或没有 ``message_id``，一律抛 RuntimeError——
+    否则调用方会一路「已发送 None」地静默成功，链路就不可信了。
+    """
+    if not chat_id:
+        raise RuntimeError("缺少 chat_id（FEISHU_CHAT_ID 或 --chat）")
+    result = _api("/im/v1/messages?receive_id_type=chat_id", token(), {
         "receive_id": chat_id, "msg_type": "interactive",
         "content": json.dumps(card, ensure_ascii=False)})
+    code = result.get("code")
+    if code not in (0, None):
+        raise RuntimeError(f"飞书拒收 code={code} msg={result.get('msg')} "
+                           f"（chat_id={chat_id}；机器人进群了吗？）")
+    data = result.get("data") or {}
+    if not data.get("message_id"):
+        raise RuntimeError(f"飞书没返回 message_id，不能算发送成功：{result}")
+    return data
 
 
 def read_messages(chat_id: str, limit: int = 5) -> list[dict]:

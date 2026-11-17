@@ -186,9 +186,54 @@ def resolve_secret(refs: Dict[str, str], secret_ref: str) -> Tuple[str, str]:
     return "", ""
 
 
+def mask(secret: str) -> str:
+    """只给首尾各 4 位：能对上是哪一把，但截图/日志里不落全量密钥。"""
+    if len(secret) <= 8:
+        return f"{'*' * len(secret)}（{len(secret)} 字符）"
+    return f"{secret[:4]}…{secret[-4:]}（{len(secret)} 字符）"
+
+
+def verify(app_id: str, secret: str) -> Tuple[bool, str]:
+    """用这套凭据换一次 tenant_access_token——换得到才说明 secret 真是飞书的。"""
+    import os
+
+    saved = (os.environ.get("FEISHU_APP_ID"), os.environ.get("FEISHU_APP_SECRET"))
+    os.environ["FEISHU_APP_ID"], os.environ["FEISHU_APP_SECRET"] = app_id, secret
+    try:
+        from core.feishu import token
+        token()
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)[:300]
+    finally:
+        for key, value in zip(("FEISHU_APP_ID", "FEISHU_APP_SECRET"), saved):
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def sanity_check(app_id: str, secret: str) -> str:
+    """写 .env 之前的最后一道闸：拿错键的形态有两种，都在这里挡掉。
+
+    - secret 和 appId 一模一样：说明按位置取到了 app_id 那个键（老毛病）。
+    - secret 明显太短：飞书 app secret 是 32 字符，短的大概率是别的服务的 key。
+    返回空串表示通过，否则返回人话原因。
+    """
+    if secret and app_id and secret.strip() == app_id.strip():
+        return ("读到的 secret 和 appId 一模一样——取到了错的键。不写 .env，"
+                "先看 config.json 里 secretRef 指向哪个键。")
+    if secret and len(secret) < 20:
+        return (f"secret 只有 {len(secret)} 字符，不像飞书 app secret（32 字符）。"
+                "不写 .env：写进去只会让第一次发卡 4xx，比现在更难查。")
+    return ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="只看读到什么，不写 .env")
+    parser.add_argument("--verify", action="store_true",
+                        help="换一次 tenant_access_token，证明 secret 真的可用")
     args = parser.parse_args()
 
     config_path = first_existing("integration_config")
@@ -207,6 +252,9 @@ def main() -> int:
     app_id = bot["appId"] if bot else ""
     secret_ref = bot["secretRef"] if bot else ""
     secret, how = resolve_secret(refs, secret_ref) if secret_ref else ("", "")
+    if not secret and not secret_ref:
+        # 配置里没给 secretRef：只接受唯一一个「飞书 secret」键，多一个都不猜
+        secret, how = resolve_secret(refs, "")
 
     print(f"integration 配置：{config_path or '（未找到）'}")
     print(f"凭据文件：{cred_path or '（未找到）'}")
@@ -217,14 +265,32 @@ def main() -> int:
             print(f"  · {item['botName'] or '(未命名)'} {item['appId']} activated={item['activated'] or '-'}{mark}")
     print(f"appId：{app_id or '（没读到，字段名可能不同）'}")
     if secret:
-        print(f"secret：已读到（{len(secret)} 字符，来源 {how}）")
+        print(f"secret：{mask(secret)}　来源 {how}")
     elif secret_ref:
         print(f"secret：（secretRef = {secret_ref}，但在 refs 里没找到对应密钥）")
     else:
         print("secret：（没读到，检查 refs: 结构）")
 
+    problem = sanity_check(app_id, secret)
+    if problem:
+        print(f"\n✗ {problem}", file=sys.stderr)
+        return 1
+
+    if args.verify:
+        if not (app_id and secret):
+            print("\n✗ appId / secret 没读全，没法验证。")
+            return 1
+        ok, detail = verify(app_id, secret)
+        print("✓ 凭据可用：已换到 tenant_access_token" if ok else f"✗ 凭据无效：{detail}")
+        if not ok:
+            return 1
+
     if args.dry_run:
-        return 0
+        if app_id and secret:
+            print("\n--dry-run：没有写 .env（凭据看起来没问题，去掉 --dry-run 就落盘）。")
+            return 0
+        print("\n--dry-run：还没读全，先别写。")
+        return 1
     if not (app_id and secret):
         print("\n没读全，先不写 .env。手动填进 references/tokens.md 里那三项即可。")
         return 1
@@ -232,6 +298,7 @@ def main() -> int:
     config.save_env({"FEISHU_APP_ID": app_id, "FEISHU_APP_SECRET": secret})
     print(f"\n已写入 {config.env_path()}（只写了 appId/secret，chat_id 还要你选）")
     print("下一步：把机器人拉进群/发一条私聊，然后 `python3 setup/feishu_chats.py` 列出会话拿 chat_id。")
+    print("再跑 `python3 setup/doctor.py --send-test` 确认手机真收到。")
     print("注意：发消息不需要长连接，不会和 dsh-im 抢事件。")
     return 0
 

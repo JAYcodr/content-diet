@@ -24,7 +24,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-from core import config
+_ROOT = Path(__file__).resolve().parent.parent      # 直接 python3 <script> 也能 import core
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from core import config, sent  # noqa: E402
 from core.feishu import card_v2, cols, footer, img, md, send_card, upload_image  # noqa: E402
 
 from sources import bangumi as anime_pick  # noqa: E402
@@ -37,12 +41,25 @@ PROXY = config.PROXY
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36"
 CST = timezone(timedelta(hours=8))
 
+_REPORTED: set = set()
+
+
+def report_once(key: str, message: str) -> None:
+    """降级提示只打一次：每张封面都刷一行等于没有提示。"""
+    if key in _REPORTED:
+        return
+    _REPORTED.add(key)
+    print(message, file=sys.stderr)
+
 
 def fetch_image(url: str, name: str, *, via_proxy: bool) -> Optional[Path]:
     """下载封面到缓存，返回本地路径。Bangumi 图站直连不通，必须走代理。"""
     if not url:
         return None
     if not config.try_mkdir(CACHE):
+        report_once("cover-cache",
+                    "封面缓存目录不可用（状态目录不可写）：本次每张封面都会重新下载并重传，"
+                    "卡片仍会出，只是慢")
         return None          # 只读环境：没有封面缓存就降级成纯文字行
     target = CACHE / f"{name}.jpg"
     if target.exists() and target.stat().st_size > 1000:
@@ -100,9 +117,33 @@ def anime_rows(limit: int) -> List[Dict[str, Any]]:
     return rows
 
 
+def novel_category_ids() -> List[int]:
+    """档案 ``novel_categories``（中文分类名）→ 起点榜单 catid。
+
+    空 = 用默认六榜；名字对不上时明确提示并回落，不静默。
+    """
+    default = [9, 10, 7, 5, 6, 12]
+    preferred = [str(x).strip() for x in config.profile_list("novel_categories") if str(x).strip()]
+    if not preferred:
+        return default
+    by_name = {name: cid for cid, name in qidian_pick.CATS.items()}
+    ids: List[int] = []
+    for name in preferred:
+        cid = by_name.get(name)
+        if cid is None:                      # 「悬疑」对「悬疑灵异」这种近似名也算命中
+            cid = next((c for n, c in by_name.items() if name in n or n in name), None)
+        if cid is not None and cid not in ids:
+            ids.append(cid)
+    if not ids:
+        print(f"档案里的分类 {preferred} 对不上起点榜单分类 {sorted(by_name)}，回落到默认六榜",
+              file=sys.stderr)
+        return default
+    return ids
+
+
 def novel_rows(limit: int) -> List[Dict[str, Any]]:
     html_items: List[Dict[str, Any]] = []
-    for cat in (9, 10, 7, 5, 6, 12):
+    for cat in novel_category_ids():
         try:
             html = qidian_pick.fetch(cat, datetime.now(CST).strftime("%Y%m"))
         except Exception as exc:  # noqa: BLE001
@@ -110,8 +151,9 @@ def novel_rows(limit: int) -> List[Dict[str, Any]]:
             continue
         html_items.extend(qidian_pick.parse(html, qidian_pick.CATS.get(cat, str(cat))))
     scored = []
+    dropped = qidian_pick.dropped()
     for book in html_items:
-        if book["title"] in qidian_pick.DROPPED or book["title"] in qidian_pick.SHELF_TITLES:
+        if book["title"] in dropped or book["title"] in qidian_pick.SHELF_TITLES:
             continue
         book.update(qidian_pick.score(book))
         scored.append(book)
@@ -138,6 +180,12 @@ def novel_rows(limit: int) -> List[Dict[str, Any]]:
     return rows
 
 
+def card_title() -> str:
+    """标题里的称呼来自档案；没填就是中性标题——绝不硬编码某个人的名字。"""
+    name = config.display_name()
+    return f"{name} · 本周片单" if name else "本周片单"
+
+
 def build_card(anime: List[Dict[str, Any]], novels: List[Dict[str, Any]]) -> Dict[str, Any]:
     today = datetime.now(CST)
     elements: List[Dict[str, Any]] = [md(f"**📺 番剧 · 当季**　<font color='grey'>Bangumi 评分 + 口味匹配</font>")]
@@ -157,7 +205,7 @@ def build_card(anime: List[Dict[str, Any]], novels: List[Dict[str, Any]]) -> Dic
         elements.append({"tag": "hr"})
 
     elements.append(footer(f"{today.month} 月 {today.day} 日 · 每週日更新 · 數據源 Bangumi / 起點月票榜"))
-    return card_v2(title="铃 · 本周片单", subtitle=f"番剧 {len(anime)} 部 · 网文 {len(novels)} 本",
+    return card_v2(title=card_title(), subtitle=f"番剧 {len(anime)} 部 · 网文 {len(novels)} 本",
                    template="turquoise", elements=elements)
 
 
@@ -174,6 +222,7 @@ def main() -> int:
     parser.add_argument("--chat", default=None)
     parser.add_argument("--preview", action="store_true")
     parser.add_argument("--no-send", action="store_true")
+    parser.add_argument("--force-send", action="store_true", help="忽略本周期同内容去重")
     args = parser.parse_args()
 
     args.chat = args.chat or config.feishu_chat()
@@ -191,9 +240,18 @@ def main() -> int:
     print(text_summary(anime, novels))
     if args.no_send:
         return 0
+    key = sent.week_key("weekly")
+    digest = sent.fingerprint([r["title"] for r in anime], [r["title"] for r in novels],
+                              [r["sub"] for r in anime] + [r["sub"] for r in novels])
+    if not args.force_send:
+        previous = sent.already_sent(key, digest)
+        if previous:
+            print(f"本周这份片单已经发过（{previous}），跳过；要重发加 --force-send", file=sys.stderr)
+            return 0
     try:
         result = send_card(args.chat, card)
         print(f"卡片已发送 {result.get('message_id')}", file=sys.stderr)
+        sent.mark_sent(key, digest, str(result.get("message_id")))
     except Exception as exc:  # noqa: BLE001
         print(f"发送失败: {exc}", file=sys.stderr)
         return 3
