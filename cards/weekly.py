@@ -188,22 +188,26 @@ def card_title() -> str:
 
 def build_card(anime: List[Dict[str, Any]], novels: List[Dict[str, Any]]) -> Dict[str, Any]:
     today = datetime.now(CST)
+    n = 0
     elements: List[Dict[str, Any]] = [md(f"**📺 番剧 · 当季**　<font color='grey'>Bangumi 评分 + 口味匹配</font>")]
     for row in anime:
+        n += 1
         key = img_key_for(row["cover"])
-        body = f"**{row['title']}**\n<font color='grey'>{row['sub']}</font>\n{row['note']}　[条目]({row['url']})"
+        body = f"**{n}. {row['title']}**\n<font color='grey'>{row['sub']}</font>\n{row['note']}　[条目]({row['url']})"
         elements.append(cols((1, [img(key, size="96px 136px", radius="6px")]), (3, [md(body)]))
                         if key else md(body))
         elements.append({"tag": "hr"})
 
     elements.append(md("**📖 网文 · 月票榜**　<font color='grey'>起点移动端榜单</font>"))
     for row in novels:
+        n += 1
         key = img_key_for(row["cover"])
-        body = f"**{row['title']}**\n<font color='grey'>{row['sub']}</font>\n{row['note']}　[书页]({row['url']})"
+        body = f"**{n}. {row['title']}**\n<font color='grey'>{row['sub']}</font>\n{row['note']}　[书页]({row['url']})"
         elements.append(cols((1, [img(key, size="96px 136px", radius="6px")]), (3, [md(body)]))
                         if key else md(body))
         elements.append({"tag": "hr"})
 
+    elements.append(md("<font color='grey'>回「3 跳过」或「2 看过了」，下期不再推这部。</font>"))
     elements.append(footer(f"{today.month} 月 {today.day} 日 · 每週日更新 · 數據源 Bangumi / 起點月票榜"))
     return card_v2(title=card_title(), subtitle=f"番剧 {len(anime)} 部 · 网文 {len(novels)} 本",
                    template="turquoise", elements=elements)
@@ -213,6 +217,22 @@ def text_summary(anime: List[Dict[str, Any]], novels: List[Dict[str, Any]]) -> s
     lines = [f"📺 {r['title']}（{r['sub']}）" for r in anime]
     lines += [f"📖 {r['title']}（{r['sub']}）" for r in novels]
     return "\n".join(lines)
+
+
+def save_last(anime: List[Dict[str, Any]], novels: List[Dict[str, Any]]) -> None:
+    """存下这一期的序号 → 条目，供 feedback.py 按「第 3 条」反查。"""
+    items, n = [], 0
+    for kind, rows in (("anime", anime), ("novel", novels)):
+        for r in rows:
+            n += 1
+            items.append({"n": n, "kind": kind, "title": r["title"], "url": r["url"]})
+    path = config.state_dir("") / "last_weekly.json"
+    try:
+        path.write_text(json.dumps(
+            {"period": sent.week_key("weekly"), "items": items}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    except OSError as exc:            # 写不下不影响发卡，但要说一声
+        print(f"last_weekly 写入失败：{exc}", file=sys.stderr)
 
 
 def main() -> int:
@@ -252,6 +272,7 @@ def main() -> int:
         result = send_card(args.chat, card)
         print(f"卡片已发送 {result.get('message_id')}", file=sys.stderr)
         sent.mark_sent(key, digest, str(result.get("message_id")))
+        save_last(anime, novels)
     except Exception as exc:  # noqa: BLE001
         print(f"发送失败: {exc}", file=sys.stderr)
         return 3

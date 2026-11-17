@@ -280,6 +280,55 @@ def run_nintendo(argv):
     return rc, out.getvalue(), err.getvalue()
 
 
+class TestFeedbackLoop(unittest.TestCase):
+    """周卡序号 → feedback.json 的写入链路（feedback.py）。"""
+
+    def setUp(self):
+        reset_state()
+        write_profile()
+        (HOME / "last_weekly.json").write_text(json.dumps({
+            "period": "2026-W47",
+            "items": [
+                {"n": 1, "kind": "anime", "title": "愚者之夜", "url": "u1"},
+                {"n": 2, "kind": "anime", "title": "药屋少女的呢喃 第三季", "url": "u2"},
+                {"n": 3, "kind": "novel", "title": "废土边境检查官", "url": "u3"},
+            ]}, ensure_ascii=False), encoding="utf-8")
+        import feedback
+        self.fb = feedback
+
+    def _args(self, action, numbers=(), names=()):
+        return type("A", (), {"action": action, "numbers": list(numbers), "names": list(names)})()
+
+    def test_number_maps_to_kind_and_title(self):
+        picks = self.fb.resolve(self._args("skip", ["3"]))
+        self.assertEqual(picks, [("novel", "废土边境检查官")])
+
+    def test_comma_list_and_name(self):
+        self.assertEqual(len(self.fb.resolve(self._args("seen", ["1,2"]))), 2)
+        # 同时给序号和名字时名字优先（resolve 里先判 names）
+        self.assertEqual(self.fb.resolve(self._args("skip", ["1"], ["药屋少女"]))[0][1],
+                         "药屋少女的呢喃 第三季")
+        self.assertEqual(self.fb.resolve(self._args("skip", ["1"], ["愚者"]))[0][1], "愚者之夜")
+
+    def test_bad_number_fails_loudly(self):
+        with self.assertRaises(SystemExit):
+            self.fb.resolve(self._args("skip", ["9"]))
+
+    def test_apply_dedupes_and_flips_sides(self):
+        self.fb.apply("skip", [("anime", "愚者之夜")])
+        self.fb.apply("skip", [("anime", "愚者之夜")])          # 重复不写第二遍
+        self.fb.apply("seen", [("anime", "愚者之夜")])          # 换边摘掉旧记录
+        data = config.load_feedback()
+        self.assertEqual(data["anime"]["skip"], [])
+        self.assertEqual(data["anime"]["seen"], ["愚者之夜"])
+
+    def test_feedback_actually_filters(self):
+        """写进 skip 之后，筛选真的把它排除掉——这条才是闭环的意义。"""
+        config.save_feedback({"anime": {"skip": ["愚者之夜"]}})
+        bangumi.refresh()
+        self.assertTrue(bangumi.seen({"name_cn": "愚者之夜", "name": "x"}))
+
+
 class TestNintendoContract(unittest.TestCase):
     def setUp(self):
         reset_state()
